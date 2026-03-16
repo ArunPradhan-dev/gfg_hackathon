@@ -17,6 +17,21 @@ st.set_page_config(
 )
 
 
+# ---------------- LOAD CSS ----------------
+
+def load_css(file_name):
+    with open(file_name) as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+load_css("style.css")
+
+
+# ---------------- SESSION STATE ----------------
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+
 # ---------------- LOAD API KEY ----------------
 
 load_dotenv()
@@ -40,16 +55,12 @@ Ask questions about your dataset and the system will automatically:
 
 # ---------------- SIDEBAR ----------------
 
-st.sidebar.title("Dashboard Controls")
+st.sidebar.title("Dataset Controls")
 
 uploaded_file = st.sidebar.file_uploader(
     "Upload CSV Dataset (optional)",
     type=["csv"]
 )
-
-question = st.sidebar.text_input("Ask a question")
-
-generate = st.sidebar.button("Generate Dashboard")
 
 
 # ---------------- DATASET LOADING ----------------
@@ -68,7 +79,7 @@ if uploaded_file is not None:
 
     df_preview = df_uploaded.head(10)
 
-    st.success("Using uploaded dataset")
+    st.sidebar.success("Using uploaded dataset")
 
 else:
 
@@ -87,7 +98,7 @@ else:
     dataset_name = "customers"
     columns = ", ".join(df_preview.columns)
 
-    st.info("Using default dataset")
+    st.sidebar.info("Using default dataset")
 
 
 # ---------------- DATASET INFO ----------------
@@ -96,11 +107,8 @@ st.subheader("Dataset Information")
 
 col1, col2 = st.columns(2)
 
-with col1:
-    st.metric("Rows", total_rows)
-
-with col2:
-    st.metric("Columns", len(df_preview.columns))
+col1.metric("Rows", total_rows)
+col2.metric("Columns", len(df_preview.columns))
 
 
 # ---------------- DATASET PREVIEW ----------------
@@ -132,15 +140,53 @@ def run_query(sql_query):
     return pd.read_sql_query(sql_query, conn)
 
 
-# ---------------- MAIN LOGIC ----------------
+# ---------------- DISPLAY CHAT HISTORY ----------------
 
-if generate:
+for message in st.session_state.messages:
 
-    if question.strip() == "":
-        st.warning("Please enter a question.")
-        st.stop()
+    with st.chat_message(message["role"]):
 
-    prompt = f"""
+        if message["type"] == "text":
+            st.write(message["content"])
+
+        elif message["type"] == "data":
+            st.dataframe(message["content"], width="stretch")
+
+        elif message["type"] == "chart":
+            st.plotly_chart(message["content"], width="stretch")
+
+        elif message["type"] == "metric":
+            st.metric(message["label"], message["value"])
+
+
+# ---------------- CHAT INPUT ----------------
+
+prompt = st.chat_input("Ask a question about your dataset")
+
+if prompt:
+
+    # Show user message
+    st.session_state.messages.append({
+        "role": "user",
+        "type": "text",
+        "content": prompt
+    })
+
+    with st.chat_message("user"):
+        st.write(prompt)
+
+
+    # Conversation history
+    history = " ".join(
+        msg["content"] for msg in st.session_state.messages if msg["role"] == "user"
+    )
+
+
+    # ---------------- GENERATE SQL ----------------
+
+    with st.spinner("Analyzing data with AI..."):
+
+        response = ask_gemini(f"""
 You are a data analyst.
 
 Database table: {dataset_name}
@@ -148,15 +194,15 @@ Database table: {dataset_name}
 Columns:
 {columns}
 
-User question:
-{question}
+Conversation history:
+{history}
 
-Return ONLY valid JSON.
+Return ONLY JSON.
 
 The SQL can return:
-1) Two columns (category and value) for charts
+1) Two columns (category and value)
 OR
-2) A single aggregated value (like average, median, count).
+2) A single aggregated value.
 
 Use SQLite compatible SQL only.
 
@@ -165,104 +211,85 @@ Format:
 {{
 "sql":"SQL_QUERY"
 }}
-"""
+""")
 
-    response = None
+    text = response.text.strip()
 
-    try:
+    json_start = text.find("{")
+    json_end = text.rfind("}") + 1
 
-        with st.spinner("Analyzing data with AI..."):
+    json_text = text[json_start:json_end]
 
-            response = ask_gemini(prompt)
+    result = json.loads(json_text)
 
-        text = response.text.strip()
+    sql = result.get("sql")
 
-        json_start = text.find("{")
-        json_end = text.rfind("}") + 1
+    df = run_query(sql)
 
-        json_text = text[json_start:json_end]
 
-        result = json.loads(json_text)
+    # ---------------- AI RESPONSE ----------------
 
-        sql = result.get("sql")
+    with st.chat_message("assistant"):
 
-        st.subheader("Generated SQL")
         st.code(sql)
 
-        df = run_query(sql)
-
         if df.empty:
-            st.warning("Query returned no results.")
-            st.stop()
+            st.warning("Query returned no results")
 
-        st.subheader("Query Result")
-        st.dataframe(df, width="stretch")
+        else:
 
+            # Show result table
+            st.subheader("Query Result")
+            st.dataframe(df, width="stretch")
 
-        # ---------------- METRIC HANDLING ----------------
-
-        if df.shape[1] == 1:
-
-            metric_name = df.columns[0].replace("_"," ").title()
-            metric_value = df.iloc[0,0]
-
-            st.subheader("Result")
-            st.metric(metric_name, metric_value)
-            st.stop()
+            st.session_state.messages.append({
+                "role":"assistant",
+                "type":"data",
+                "content":df
+            })
 
 
-        st.divider()
+            # Metric result
+            if df.shape[1] == 1:
+
+                metric_name = df.columns[0].replace("_"," ").title()
+                metric_value = df.iloc[0,0]
+
+                st.metric(metric_name, metric_value)
+
+                st.session_state.messages.append({
+                    "role":"assistant",
+                    "type":"metric",
+                    "label":metric_name,
+                    "value":metric_value
+                })
+
+            else:
+
+                st.subheader("Visualization")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+
+                    st.write("Bar Chart")
+
+                    fig_bar = px.bar(df, x=df.columns[0], y=df.columns[1])
+
+                    st.plotly_chart(fig_bar, width="stretch")
 
 
-        # ---------------- VISUALIZATION ----------------
+                with col2:
 
-        st.subheader("📈 Visualization")
+                    st.write("Pie Chart")
 
-        col1, col2 = st.columns(2)
+                    fig_pie = px.pie(df, names=df.columns[0], values=df.columns[1])
 
-        with col1:
-
-            st.subheader("Bar Chart")
-
-            fig_bar = px.bar(
-                df,
-                x=df.columns[0],
-                y=df.columns[1]
-            )
-
-            st.plotly_chart(fig_bar, width="stretch")
+                    st.plotly_chart(fig_pie, width="stretch")
 
 
-        with col2:
+                st.write("Line Chart")
 
-            st.subheader("Pie Chart")
+                fig_line = px.line(df, x=df.columns[0], y=df.columns[1])
 
-            fig_pie = px.pie(
-                df,
-                names=df.columns[0],
-                values=df.columns[1]
-            )
-
-            st.plotly_chart(fig_pie, width="stretch")
-
-
-        st.subheader("Line Chart")
-
-        fig_line = px.line(
-            df,
-            x=df.columns[0],
-            y=df.columns[1]
-        )
-
-        st.plotly_chart(fig_line, width="stretch")
-
-
-    except Exception as e:
-
-        st.error("Something went wrong.")
-
-        if response:
-            st.write("Gemini response:")
-            st.write(response.text)
-
-        st.write("Error details:", e)
+                st.plotly_chart(fig_line, width="stretch")
