@@ -8,17 +8,15 @@ import os
 from dotenv import load_dotenv
 
 
-# ---------------- PAGE CONFIG ----------------
-
+# PAGE CONFIG 
 st.set_page_config(
-    page_title="AI Business Intelligence Dashboard",
+    page_title="Business Intelligence Dashboard",
     page_icon="📊",
     layout="wide"
 )
 
 
-# ---------------- LOAD CSS ----------------
-
+#LOAD CSS 
 def load_css(file_name):
     with open(file_name) as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
@@ -27,41 +25,31 @@ load_css("style.css")
 
 st.markdown("""
 <style>
-/* Hide top-right menu */
 [data-testid="stToolbar"] {
     display: none;
 }
 
-/* Hide footer */
 footer {
     visibility: hidden;
 }
 
-/* Hide hamburger menu */
 #MainMenu {
     visibility: hidden;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- SESSION STATE ----------------
-
+# SESSION STATE 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-
-# ---------------- LOAD API KEY ----------------
-
+# LOAD API KEY 
 load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY")
-
 client = genai.Client(api_key=api_key)
 
-
-# ---------------- HEADER ----------------
-
+#  HEADER
 st.title("📊 Business Intelligence Dashboard")
-
 st.markdown("""
 Ask questions about your dataset and the system will automatically:
 
@@ -69,29 +57,32 @@ Ask questions about your dataset and the system will automatically:
 * Analyze the data  
 * Build visualizations  
 """)
-
-
-# ---------------- SIDEBAR ----------------
-
+# SIDEBAR 
 st.sidebar.title("Dataset Controls")
-
 uploaded_file = st.sidebar.file_uploader(
     "Upload CSV Dataset (optional)",
     type=["csv"]
 )
-
 #clear chat
 if st.sidebar.button("Clear Chat"):
     st.session_state.messages = []
     st.rerun()
 
-
-# ---------------- DATASET LOADING ----------------
-
+#  DATASET LOADING 
 if uploaded_file is not None:
 
-    df_uploaded = pd.read_csv(uploaded_file)
+    df_uploaded = pd.read_csv(uploaded_file, encoding="latin1")
 
+    df_uploaded = df_uploaded.loc[:, ~df_uploaded.columns.str.contains("webresource", case=False)]
+
+    df_uploaded.columns = df_uploaded.columns.str.strip()
+    df_uploaded.columns = df_uploaded.columns.str.replace(r'[^\w\s]', '', regex=True)
+    df_uploaded.columns = df_uploaded.columns.str.replace(" ", "_")
+    df_uploaded.columns = df_uploaded.columns.str.lower()
+
+    df_uploaded = df_uploaded.dropna(how="all")
+
+    # LOAD INTO DATABASE
     conn = sqlite3.connect(":memory:")
     df_uploaded.to_sql("data", conn, index=False, if_exists="replace")
 
@@ -102,17 +93,17 @@ if uploaded_file is not None:
     total_rows = len(df_uploaded)
 
     df_preview = df_uploaded.head(10)
+    st.sidebar.info("Using uploaded dataset")
+    st.toast("Dataset cleaned and loaded successfully")
 
-    st.sidebar.success("Using uploaded dataset")
 
 else:
 
     conn = sqlite3.connect("customers.db")
-
     df_all = pd.read_sql_query("SELECT * FROM customers", conn)
+    df_all = df_all.loc[:, ~df_all.columns.str.contains("webresource", case=False)]
 
     total_rows = len(df_all)
-
     df_preview = df_all.head(10)
 
     dataset_name = "customers"
@@ -122,26 +113,18 @@ else:
     st.sidebar.info("Using default dataset")
 
 
-# ---------------- DATASET INFO ----------------
-
+#DATASET INFO
 st.subheader("Dataset Information")
-
 col1, col2 = st.columns(2)
-
 col1.metric("Rows", total_rows)
 col2.metric("Columns", len(df_preview.columns))
 
 
-# ---------------- DATASET PREVIEW ----------------
-
+#  DATASET PREVIEW 
 st.subheader("Dataset Preview")
-
 st.caption("Showing first 10 rows of the dataset")
-
 st.dataframe(df_preview, width="stretch")
-
 st.divider()
-
 st.info(
 """
 💡 Ask questions below to explore insights from the dataset.
@@ -151,8 +134,7 @@ st.info(
 st.divider()
 
 
-# ---------------- GEMINI CACHE ----------------
-
+# GEMINI CACHE 
 @st.cache_data(ttl=3600)
 def ask_gemini(prompt):
 
@@ -164,15 +146,12 @@ def ask_gemini(prompt):
     return response
 
 
-# ---------------- DATABASE QUERY ----------------
-
+#  DATABASE QUERY 
 @st.cache_data
 def run_query(sql_query):
     return pd.read_sql_query(sql_query, conn)
 
-
-# ---------------- DISPLAY CHAT HISTORY ----------------
-
+#  CHAT HISTORY 
 for i, message in enumerate(st.session_state.messages):
 
     with st.chat_message(message["role"]):
@@ -194,8 +173,7 @@ for i, message in enumerate(st.session_state.messages):
             st.metric(message["label"], message["value"])
 
 
-# ---------------- CHAT INPUT ----------------
-
+#  INPUT 
 prompt = st.chat_input("Ask a question about your dataset")
 
 if prompt:
@@ -215,7 +193,7 @@ if prompt:
     )
 
 
-# ---------------- GENERATE SQL + CHART ----------------
+#GENERATE SQL + CHART 
 
     with st.spinner("Analyzing data with AI..."):
 
@@ -275,7 +253,7 @@ Error example:
     result = json.loads(json_text)
 
 
-# ---------------- HANDLE ERRORS ----------------
+#  ERRORS HANDALING
 
     if "error" in result:
 
@@ -294,24 +272,19 @@ Error example:
     sql = result.get("sql")
     chart = result.get("chart", "bar")
 
-
-# ---------------- EXTRA SQL SAFETY ----------------
-
     for col in valid_columns:
         sql = sql.replace(col.lower(), col)
-    # -------- SQL SAFETY FIX --------
+   
 
     if "ILIKE" in sql:
         sql = sql.replace("ILIKE", "LIKE")
         st.warning("Adjusted query for SQLite compatibility")
 
-# dynamic case-insensitive fix
     for col in valid_columns:
         sql = sql.replace(f"{col} LIKE", f"LOWER({col}) LIKE")
     df = run_query(sql)
 
 
-# ---------------- AI RESPONSE ----------------
 
     with st.chat_message("assistant"):
 
@@ -332,7 +305,7 @@ Error example:
             })
 
 
-# ---------------- AI INSIGHT ----------------
+#AI INSIGHT 
 
             try:
 
@@ -352,7 +325,7 @@ Data:
                 st.warning("Could not generate insight.")
 
 
-# -------- METRIC --------
+#  METRIC
 
             if df.shape[1] == 1 or chart == "metric":
 
@@ -369,7 +342,7 @@ Data:
                 })
 
 
-# -------- CHART --------
+# CHART 
 
             else:
 

@@ -1,6 +1,6 @@
 import pandas as pd
 
-# Read CSV and skip metadata line
+
 df = pd.read_csv(
     "customer_behavior.csv",
     encoding="latin1",
